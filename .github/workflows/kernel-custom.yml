@@ -165,7 +165,7 @@ on:
         description: "Android 14-5.15 子版本 (选择后自动匹配安全补丁级别；仅 Android 14 + 内核 5.15 时生效)"
         required: false
         type: choice
-        default: "lts (5.15.223)"
+        default: "auto (自动匹配最新安全补丁级别)"
         options:
           - "auto (自动匹配最新安全补丁级别)"
           - "110 (2023-06)"
