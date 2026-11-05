@@ -19,7 +19,7 @@ on:
           - "6.6"
           - "6.12"
           - "6.18"
-        default: "5.10"
+        default: "5.15"
       # 内核子版本：每个 Android + 内核组合独立下拉，仅对应组合生效，选后自动匹配安全补丁级别
       # 同一内核对应多个 Android 版本时（5.10 -> 12/13、5.15 -> 13/14），
       # 选中对应的非 auto 子版本即按该 Android 版本构建，全为 auto 时用默认映射
@@ -121,7 +121,7 @@ on:
         description: "Android 13-5.15 子版本 (选择后自动匹配安全补丁级别；仅 Android 13 + 内核 5.15 时生效)"
         required: false
         type: choice
-        default: "auto (自动匹配最新安全补丁级别)"
+        default: "lts (5.15.223)"
         options:
           - "auto (自动匹配最新安全补丁级别)"
           - "41 (2022-06)"
@@ -165,7 +165,7 @@ on:
         description: "Android 14-5.15 子版本 (选择后自动匹配安全补丁级别；仅 Android 14 + 内核 5.15 时生效)"
         required: false
         type: choice
-        default: "auto (自动匹配最新安全补丁级别)"
+        default: "lts (5.15.223)"
         options:
           - "auto (自动匹配最新安全补丁级别)"
           - "110 (2023-06)"
@@ -298,7 +298,7 @@ on:
           - SukiSU
           - BakaSU
           - FinaSU
-        default: FinaSU
+        default: BakaSU
 
       build_channel:
         description: "构建通道（正式=官方 Release 发行版，最新=上游最新提交）"
@@ -350,17 +350,17 @@ on:
         description: "启用 ZRAM 压缩算法（仅 5.10~6.6，6.12/6.18 不支持）"
         required: true
         type: boolean
-        default: false
+        default: true
       use_bbg:
         description: "启用 BBG 基带保护"
         required: true
         type: boolean
-        default: false
+        default: true
       use_net_enhance:
         description: "启用 网络增强 (BBRv3 + IPSet + Qdisc + CIFS)"
         required: true
         type: boolean
-        default: false
+        default: true
       use_rekernel:
         description: "启用 Re-Kernel 驱动"
         required: false
@@ -370,7 +370,7 @@ on:
         description: "应用 CVE-2026-43499 rtmutex 修复链"
         required: false
         type: boolean
-        default: false
+        default: true
       cancel_susfs:
         description: "禁用 SUSFS"
         required: true
