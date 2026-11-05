@@ -1595,6 +1595,11 @@ jobs:
           CONFIG_KSU_SUSFS_SUS_MAP=y
           EOF
 
+      - name: Add NoMount
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+
       - name: 配置内核名称
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
