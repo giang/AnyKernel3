@@ -382,6 +382,25 @@ jobs:
             echo "::error::repo sync 连续 3 次尝试均失败（上游连接停滞或不可用）"
             exit 1
           fi
+
+          # 完整性守卫：repo sync 断点续传偶发留下检出不完整的项目（如 clang 工具链
+          # 项目缺少 kleaf/BUILD.bazel），bazel 加载阶段会报
+          # "Every .bzl file must have a corresponding package" 而失败；检测到时
+          # 强制重新同步该项目
+          for CHECK_PATH in \
+            prebuilts/clang/host/linux-x86/kleaf/clang_toolchain_repository.bzl \
+            build/kernel/kleaf/common_kernels.bzl; do
+            DIR_PATH="${CHECK_PATH%/*}"
+            if [ -e "$DIR_PATH" ] && [ ! -f "$CHECK_PATH" ]; then
+              PROJECT_DIR="${DIR_PATH%/kleaf}"
+              if [ -d ".repo/projects" ]; then
+                echo "::warning title=repo sync 完整性守卫::$DIR_PATH 存在但缺少 $(basename "$CHECK_PATH")，重新同步 $PROJECT_DIR"
+                timeout --kill-after=30 20m $REPO sync -c --force-sync --fail-fast "$PROJECT_DIR" \
+                  || echo "::warning title=repo sync 完整性守卫::重同步 $PROJECT_DIR 失败，继续构建"
+              fi
+            fi
+          done
+
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
 
       - name: 提取实际子版本号
@@ -428,28 +447,24 @@ jobs:
       - name: 修复 glibc 2.38 兼容性
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
-          RAW_SUB="${{ inputs.sub_level }}"
-          [[ ! "$RAW_SUB" =~ ^[0-9]+$ ]] && CURRENT_SUB=99999 || CURRENT_SUB=$RAW_SUB
+          # glibc 2.38+ 上 -D_GNU_SOURCE 编译的 libsubcmd 会把 strtol 族重定向到
+          # __isoc23_strtol；旧版 tools/bpf/resolve_btfids/Makefile 构建 subcmd 时
+          # 不传内核侧 CFLAGS（编译走系统头文件，链接旧工具链时报 undefined
+          # symbol）。按 Makefile 是否仍为旧格式（subcmd 构建行没有
+          # EXTRA_CFLAGS）检测并修复，不再按子版本号猜测上游回移点，
+          # android14-5.15.110 等旧分支同样命中。
+          GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
 
-          NEEDS_FIX=false
-          if [[ "${{ inputs.android_version }}" == "android13" && "${{ inputs.kernel_version }}" == "5.10" && $CURRENT_SUB -le 186 ]] ||
-             [[ "${{ inputs.android_version }}" == "android13" && "${{ inputs.kernel_version }}" == "5.15" && $CURRENT_SUB -le 119 ]] ||
-             [[ "${{ inputs.android_version }}" == "android14" && "${{ inputs.kernel_version }}" == "6.1" && $CURRENT_SUB -le 43 ]]; then
-            NEEDS_FIX=true
-          fi
+          if grep -q '\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=' tools/bpf/resolve_btfids/Makefile 2>/dev/null \
+            && [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
+            echo "应用 glibc 2.38 兼容性修复..."
+            sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
 
-          if [ "$NEEDS_FIX" = true ]; then
-            GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
-            if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
-              echo "应用 glibc 2.38 兼容性修复..."
-              sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
-
-              if [[ "${{ inputs.kernel_version }}" == "5.10" || "${{ inputs.kernel_version }}" == "5.15" ]]; then
-                sed -i '/char \*buf = NULL;/a int i;' tools/lib/subcmd/parse-options.c 2>/dev/null || true
-                sed -i 's/for (int i = 0; subcommands\[i\]; i++) {/for (i = 0; subcommands[i]; i++) {/' tools/lib/subcmd/parse-options.c 2>/dev/null || true
-                sed -i '/if (subcommands) {/a int i;' tools/lib/subcmd/parse-options.c 2>/dev/null || true
-                sed -i 's/for (int i = 0; subcommands\[i\]; i++)/for (i = 0; subcommands[i]; i++)/' tools/lib/subcmd/parse-options.c 2>/dev/null || true
-              fi
+            if [[ "${{ inputs.kernel_version }}" == "5.10" || "${{ inputs.kernel_version }}" == "5.15" ]]; then
+              sed -i '/char \*buf = NULL;/a int i;' tools/lib/subcmd/parse-options.c 2>/dev/null || true
+              sed -i 's/for (int i = 0; subcommands\[i\]; i++) {/for (i = 0; subcommands[i]; i++) {/' tools/lib/subcmd/parse-options.c 2>/dev/null || true
+              sed -i '/if (subcommands) {/a int i;' tools/lib/subcmd/parse-options.c 2>/dev/null || true
+              sed -i 's/for (int i = 0; subcommands\[i\]; i++)/for (i = 0; subcommands[i]; i++)/' tools/lib/subcmd/parse-options.c 2>/dev/null || true
             fi
           fi
 
@@ -1326,6 +1341,11 @@ jobs:
           echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' common/security/Kconfig
 
+          # BBG blkdev_helper.c 只 include <linux/blkdev.h>，但 blkdev_get_no_open/
+          # blkdev_put_no_open 在 Linux 6.9+ 已移入私有头 block/blk.h（6.15+ 为双参
+          # 形态），导致 android17-6.18 编译报隐式声明；按头文件实际内容打兼容补丁
+          bash "$GITHUB_WORKSPACE/scripts/bbg_fixes/fix_blkdev_helper.sh" common
+
       - name: 应用网络增强（BBRv3 / IPSet / Qdisc / CIFS）
         if: inputs.use_net_enhance
         working-directory: ${{ env.KERNEL_ROOT }}/common
@@ -1451,9 +1471,20 @@ jobs:
             set_config "CONFIG_$cfg" y
           done
 
-          # 6.12 及更新版本的 NETFS 内置化后需移除 modules.bzl 的模块条目，否则打包失败
-          if { [ "$AVER" = "android16" ] || [ "$AVER" = "android17" ]; } && grep -q '"fs/netfs/netfs.ko",' modules.bzl 2>/dev/null; then
-            sed -i '/"fs\/netfs\/netfs\.ko",/d' modules.bzl
+          # CIFS=y 会把其 Kconfig select 的 NETFS_SUPPORT / CRYPTO_LIB_ARC4 一并提升
+          # 为内建，而 GKI 模块清单仍期待对应 .ko，dist 阶段产物校验将失败，需删除
+          # 对应条目。清单位置随版本变化：6.12 及更早版本在根 modules.bzl，6.18 起
+          # 迁移到 bazel/modules_private.bzl（根 modules.bzl 仅为转发 shim）。
+          # libarc4 仅在 CIFS Kconfig 声明 select 的版本（6.18+）需要处理，更早版本
+          # 由 CONFIG_PPP_MPPE=m 维持为模块，删除反而破坏其依赖。
+          if grep -q '^CONFIG_CIFS=y$' "$DEFCONFIG"; then
+            for MODULE_LIST in modules.bzl bazel/modules_private.bzl; do
+              [ -f "$MODULE_LIST" ] || continue
+              sed -i '/"fs\/netfs\/netfs\.ko",/d' "$MODULE_LIST"
+              if grep -q 'select CRYPTO_LIB_ARC4' fs/smb/client/Kconfig 2>/dev/null || grep -q 'select CRYPTO_LIB_ARC4' fs/cifs/Kconfig 2>/dev/null; then
+                sed -i '/"lib\/crypto\/libarc4\.ko",/d' "$MODULE_LIST"
+              fi
+            done
           fi
 
           # 写后校验：关键符号必须落盘
@@ -1607,7 +1638,10 @@ jobs:
             sed -i 's/-dirty//' ./common/scripts/setlocalversion
           else
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' ./common/BUILD.bazel
-            sed -i '/kmi_symbol_list_strict_mode/d' ./common/BUILD.bazel
+            # kmi_symbol_list_strict_mode 在 android17-6.18 是多行 select({...})，
+            # 整行 sed 只删首行会留下残缺字典导致 BUILD.bazel 语法错误，
+            # 改用脚本按属性/字典条目/select 块三种形态完整移除
+            python3 "$GITHUB_WORKSPACE/scripts/kleaf_fixes/strip_kmi_strict_mode.py" ./common/BUILD.bazel
             rm -rf ./common/android/abi_gki_protected_exports_*
             sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl
           fi
